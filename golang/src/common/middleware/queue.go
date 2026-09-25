@@ -48,12 +48,12 @@ func (qm *QueueMiddleware) Send(msg Message) error {
 func (qm *QueueMiddleware) StartConsuming(callbackFunc func(msg Message, ack func(), nack func())) error {
 	msgs, err := qm.recvChannel.Consume(
 		qm.queueName,
-		"",    // consumerTag
-		false, // autoack
-		false, // exclusive
-		false, // nolocal
-		false, // nowait
-		nil,   // args
+		qm.consumerTag, // consumerTag
+		false,          // autoack
+		false,          // exclusive
+		false,          // nolocal
+		false,          // nowait
+		nil,            // args
 	)
 	if err != nil {
 		if qm.recvChannel.IsClosed() {

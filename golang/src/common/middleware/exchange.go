@@ -54,12 +54,12 @@ func (em *ExchangeMiddleware) Send(msg Message) error {
 func (em *ExchangeMiddleware) StartConsuming(callbackFunc func(msg Message, ack func(), nack func())) error {
 	msgs, err := em.recvChannel.Consume(
 		em.queueName,
-		"",    // consumerTag
-		false, // autoack
-		false, // exclusive
-		false, // nolocal
-		false, // nowait
-		nil,   // args
+		em.consumerTag, // consumerTag
+		false,          // autoack
+		false,          // exclusive
+		false,          // nolocal
+		false,          // nowait
+		nil,            // args
 	)
 	if err != nil {
 		if em.recvChannel.IsClosed() {

@@ -8,8 +8,6 @@ import (
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/middleware"
 )
 
-const FIXED_SEED = 42
-
 type MessageHandler struct {
 	clientId uint64
 }
@@ -41,7 +39,5 @@ func (messageHandler *MessageHandler) DeserializeResultMessage(message *middlewa
 }
 
 func generateClientId() uint64 {
-	pcg := rand.NewPCG(FIXED_SEED, FIXED_SEED)
-	r := rand.New(pcg)
-	return r.Uint64()
+	return rand.Uint64()
 }
