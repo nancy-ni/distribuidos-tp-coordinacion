@@ -2,6 +2,7 @@ package sum
 
 import (
 	"fmt"
+	"hash/fnv"
 	"log/slog"
 	"sync"
 	"time"
@@ -33,6 +34,8 @@ type Sum struct {
 	fruitItemPerClientMap map[uint64]map[string]fruititem.FruitItem
 	clientChannels        map[uint64]chan struct{}
 	lock                  sync.Mutex
+	aggregationAmount     int
+	aggregationPrefix     string
 }
 
 func NewSum(config SumConfig) (*Sum, error) {
@@ -90,6 +93,8 @@ func NewSum(config SumConfig) (*Sum, error) {
 		fruitItemPerClientMap: map[uint64]map[string]fruititem.FruitItem{},
 		clientChannels:        map[uint64]chan struct{}{},
 		lock:                  sync.Mutex{},
+		aggregationAmount:     config.AggregationAmount,
+		aggregationPrefix:     config.AggregationPrefix,
 	}, nil
 }
 
@@ -130,18 +135,22 @@ func (sum *Sum) handleMessage(msg middleware.Message, ack func(), nack func()) {
 
 func (sum *Sum) handleEndOfRecordMessage(clientId uint64) error {
 	slog.Info("Received End Of Records message")
+	outputExchange := sum.outputExchange.(*middleware.ExchangeMiddleware)
 
 	sum.lock.Lock()
 	clientFruits, ok := sum.fruitItemPerClientMap[clientId]
 	if ok {
-		for _, item := range clientFruits {
+		for fruit, item := range clientFruits {
+			targetNode := sum.getTargetAggregationNode(clientId, fruit)
+			routingKey := fmt.Sprintf("%s_%d", sum.aggregationPrefix, targetNode)
+
 			fruitRecord := []fruititem.FruitItem{item}
 			message, err := inner.SerializeMessage(clientId, fruitRecord)
 			if err != nil {
 				slog.Debug("While serializing message", "err", err)
 				return err
 			}
-			if err := sum.outputExchange.Send(*message); err != nil {
+			if err := outputExchange.SendWithKey(*message, routingKey); err != nil {
 				slog.Debug("While sending message", "err", err)
 				return err
 			}
@@ -156,9 +165,9 @@ func (sum *Sum) handleEndOfRecordMessage(clientId uint64) error {
 		slog.Debug("While serializing EOF message", "err", err)
 		return err
 	}
-	if err := sum.outputExchange.Send(*message); err != nil {
-		slog.Debug("While sending EOF message", "err", err)
-		return err
+	for i := 0; i < sum.aggregationAmount; i++ {
+		routingKey := fmt.Sprintf("%s_%d", sum.aggregationPrefix, i)
+		_ = outputExchange.SendWithKey(*message, routingKey)
 	}
 	return nil
 }
@@ -226,4 +235,13 @@ func (sum *Sum) handleControlMessage(msg middleware.Message, ack func(), nack fu
 	}
 
 	sum.handleEndOfRecordMessage(clientId)
+}
+
+func (sum *Sum) getTargetAggregationNode(clientId uint64, fruitName string) int {
+	h := fnv.New64a()
+	h.Write([]byte("42"))
+	fmt.Fprintf(h, "-%d-%s", clientId, fruitName)
+
+	hashValue := h.Sum64()
+	return int(hashValue % uint64(sum.aggregationAmount))
 }

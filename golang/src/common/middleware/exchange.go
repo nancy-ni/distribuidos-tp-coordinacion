@@ -102,3 +102,25 @@ func (em *ExchangeMiddleware) Bind(exchangeName string, routingKey string) error
 	}
 	return nil
 }
+
+func (em *ExchangeMiddleware) SendWithKey(msg Message, routingKey string) error {
+	body := []byte(msg.Body)
+
+	err := em.sendChannel.Publish(
+		em.exchange,
+		routingKey,
+		false, // mandatory
+		false, // immediate
+		amqp.Publishing{
+			ContentType: "application/json",
+			Body:        body,
+		},
+	)
+	if err != nil {
+		if em.sendChannel.IsClosed() {
+			return ErrMessageMiddlewareDisconnected
+		}
+		return ErrMessageMiddlewareMessage
+	}
+	return nil
+}
