@@ -4,7 +4,10 @@ import (
 	"fmt"
 	"hash/fnv"
 	"log/slog"
+	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/fruititem"
@@ -99,14 +102,28 @@ func NewSum(config SumConfig) (*Sum, error) {
 }
 
 func (sum *Sum) Run() {
+	signalChannel := make(chan os.Signal, 1)
+	signal.Notify(signalChannel, os.Interrupt, syscall.SIGTERM)
+
 	go func() {
 		sum.controlQueue.StartConsuming(func(msg middleware.Message, ack, nack func()) {
 			sum.handleControlMessage(msg, ack, nack)
 		})
 	}()
-	sum.inputQueue.StartConsuming(func(msg middleware.Message, ack, nack func()) {
-		sum.handleMessage(msg, ack, nack)
-	})
+	go func() {
+		sum.inputQueue.StartConsuming(func(msg middleware.Message, ack, nack func()) {
+			sum.handleMessage(msg, ack, nack)
+		})
+	}()
+
+	sig := <-signalChannel
+	slog.Info(fmt.Sprintf("Received %v signal for Sum", sig))
+
+	sum.inputQueue.Close()
+	sum.controlQueue.Close()
+	sum.outputExchange.Close()
+	sum.controlExchange.Close()
+	slog.Info("Sum Gracefully Shut Down")
 }
 
 func (sum *Sum) handleMessage(msg middleware.Message, ack func(), nack func()) {
@@ -226,7 +243,7 @@ func (sum *Sum) handleControlMessage(msg middleware.Message, ack func(), nack fu
 	select {
 	case <-clientChannel:
 		break
-	case <-time.After(1 * time.Second):
+	case <-time.After(2 * time.Second):
 		sum.lock.Lock()
 		close(clientChannel)
 		delete(sum.clientChannels, clientId)

@@ -3,7 +3,10 @@ package aggregation
 import (
 	"fmt"
 	"log/slog"
+	"os"
+	"os/signal"
 	"sort"
+	"syscall"
 
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/fruititem"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/messageprotocol/inner"
@@ -57,9 +60,21 @@ func NewAggregation(config AggregationConfig) (*Aggregation, error) {
 }
 
 func (aggregation *Aggregation) Run() {
-	aggregation.inputExchange.StartConsuming(func(msg middleware.Message, ack, nack func()) {
-		aggregation.handleMessage(msg, ack, nack)
-	})
+	signalChannel := make(chan os.Signal, 1)
+	signal.Notify(signalChannel, os.Interrupt, syscall.SIGTERM)
+
+	go func() {
+		aggregation.inputExchange.StartConsuming(func(msg middleware.Message, ack, nack func()) {
+			aggregation.handleMessage(msg, ack, nack)
+		})
+	}()
+
+	sig := <-signalChannel
+	slog.Info(fmt.Sprintf("Received %v signal for Aggregation", sig))
+
+	aggregation.outputQueue.Close()
+	aggregation.inputExchange.Close()
+	slog.Info("Aggregation Gracefully Shut Down")
 }
 
 func (aggregation *Aggregation) handleMessage(msg middleware.Message, ack func(), nack func()) {
