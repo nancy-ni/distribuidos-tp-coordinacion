@@ -42,4 +42,9 @@ type Middleware interface {
 	//Se desconecta de la cola o exchange al que estaba conectado.
 	//Si ocurre un error interno que no puede resolverse devuelve ErrMessageMiddlewareClose.
 	Close() error
+
+	//Bindea la cola a un exchange con una routing key particular.
+	//Si se pierde la conexión con el middleware devuelve ErrMessageMiddlewareDisconnected.
+	//Si ocurre un error interno que no puede resolverse devuelve ErrMessageMiddlewareMessage.
+	Bind(exchangeName string, routingKey string) error
 }

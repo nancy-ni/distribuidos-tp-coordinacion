@@ -6,7 +6,7 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
-func CreateQueueMiddleware(queueName string, connectionSettings ConnSettings) (Middleware, error) {
+func CreateQueueMiddleware(queueName string, connectionSettings ConnSettings, prefetchSize ...int) (Middleware, error) {
 	conn, err := amqp.Dial("amqp://" + connectionSettings.Hostname + ":" + strconv.Itoa(connectionSettings.Port))
 	if err != nil {
 		return nil, err
@@ -36,6 +36,20 @@ func CreateQueueMiddleware(queueName string, connectionSettings ConnSettings) (M
 		recvChannel.Close()
 		conn.Close()
 		return nil, err
+	}
+
+	if len(prefetchSize) > 0 {
+		err = recvChannel.Qos(
+			prefetchSize[0], // prefetch count
+			0,               // prefetch size
+			false,           // global
+		)
+		if err != nil {
+			sendChannel.Close()
+			recvChannel.Close()
+			conn.Close()
+			return nil, err
+		}
 	}
 
 	return NewQueueMiddleware(conn, sendChannel, recvChannel, queueName), nil

@@ -2,12 +2,15 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"strconv"
 
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/sum"
 )
+
+const CONTROL_QUEUE = "control_queue"
 
 func loadConfig() (sum.SumConfig, error) {
 	id, err := strconv.Atoi(os.Getenv("ID"))
@@ -50,11 +53,14 @@ func loadConfig() (sum.SumConfig, error) {
 		return sum.SumConfig{}, errors.New("AGGREGATION_PREFIX environment variable is required")
 	}
 
+	controlQueue := fmt.Sprintf("%s_%d", CONTROL_QUEUE, id)
+
 	return sum.SumConfig{
 		Id:                id,
 		MomHost:           momHost,
 		MomPort:           momPort,
 		InputQueue:        inputQueue,
+		ControlQueue:      controlQueue,
 		SumAmount:         sumAmount,
 		SumPrefix:         sumPrefix,
 		AggregationAmount: aggregationAmount,

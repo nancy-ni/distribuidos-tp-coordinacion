@@ -79,3 +79,20 @@ func (qm *QueueMiddleware) StopConsuming() error {
 func (qm *QueueMiddleware) Close() error {
 	return CloseAllResources(qm.conn, qm.sendChannel, qm.recvChannel)
 }
+
+func (qm *QueueMiddleware) Bind(exchangeName string, routingKey string) error {
+	err := qm.recvChannel.QueueBind(
+		qm.queueName,
+		routingKey,
+		exchangeName,
+		false,
+		nil,
+	)
+	if err != nil {
+		if qm.recvChannel.IsClosed() {
+			return ErrMessageMiddlewareDisconnected
+		}
+		return ErrMessageMiddlewareMessage
+	}
+	return nil
+}

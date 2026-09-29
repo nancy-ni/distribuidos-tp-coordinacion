@@ -85,3 +85,20 @@ func (em *ExchangeMiddleware) StopConsuming() error {
 func (em *ExchangeMiddleware) Close() error {
 	return CloseAllResources(em.conn, em.sendChannel, em.recvChannel)
 }
+
+func (em *ExchangeMiddleware) Bind(exchangeName string, routingKey string) error {
+	err := em.recvChannel.QueueBind(
+		em.queueName,
+		routingKey,
+		exchangeName,
+		false,
+		nil,
+	)
+	if err != nil {
+		if em.recvChannel.IsClosed() {
+			return ErrMessageMiddlewareDisconnected
+		}
+		return ErrMessageMiddlewareMessage
+	}
+	return nil
+}
