@@ -2,6 +2,7 @@ package messagehandler
 
 import (
 	"math/rand/v2"
+	"strconv"
 
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/fruititem"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/messageprotocol/inner"
@@ -9,26 +10,29 @@ import (
 )
 
 type MessageHandler struct {
-	clientId uint64
+	clientId     uint64
+	messagesSent int
 }
 
 func NewMessageHandler() MessageHandler {
 	clientId := generateClientId()
-	return MessageHandler{clientId: clientId}
+	return MessageHandler{clientId: clientId, messagesSent: 0}
 }
 
 func (messageHandler *MessageHandler) SerializeDataMessage(fruitRecord fruititem.FruitItem) (*middleware.Message, error) {
 	data := []fruititem.FruitItem{fruitRecord}
-	return inner.SerializeMessage(messageHandler.clientId, data)
+	messageHandler.messagesSent++
+	return inner.SerializeMessage(messageHandler.clientId, data, inner.Data)
 }
 
 func (messageHandler *MessageHandler) SerializeEOFMessage() (*middleware.Message, error) {
 	data := []fruititem.FruitItem{}
-	return inner.SerializeMessage(messageHandler.clientId, data)
+	messagesSentStr := strconv.Itoa(messageHandler.messagesSent)
+	return inner.SerializeMessage(messageHandler.clientId, data, inner.Eof, messagesSentStr)
 }
 
 func (messageHandler *MessageHandler) DeserializeResultMessage(message *middleware.Message) ([]fruititem.FruitItem, error) {
-	clientId, fruitRecords, _, err := inner.DeserializeMessage(message)
+	clientId, fruitRecords, _, _, err := inner.DeserializeMessage(message)
 	if err != nil {
 		return nil, err
 	}

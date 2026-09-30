@@ -79,13 +79,13 @@ func (join *Join) Run() {
 func (join *Join) handleMessage(msg middleware.Message, ack func(), nack func()) {
 	defer ack()
 
-	clientId, localTop, isEof, err := inner.DeserializeMessage(&msg)
+	clientId, localTop, messageType, _, err := inner.DeserializeMessage(&msg)
 	if err != nil {
 		slog.Error("While deserializing message", "err", err)
 		return
 	}
 
-	if isEof {
+	if messageType == "EOF" {
 		if err := join.handleEndOfRecordsMessage(clientId); err != nil {
 			slog.Error("While handling end of record message", "err", err)
 		}
@@ -125,7 +125,7 @@ func (join *Join) handleEndOfRecordsMessage(clientId uint64) error {
 	}
 	delete(join.recvEofCountMap, clientId)
 
-	message, err := inner.SerializeMessage(clientId, fruitTopRecords)
+	message, err := inner.SerializeMessage(clientId, fruitTopRecords, "DATA")
 	if err != nil {
 		slog.Debug("While serializing top message", "err", err)
 		return err

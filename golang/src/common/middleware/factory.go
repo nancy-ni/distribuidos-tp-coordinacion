@@ -38,11 +38,6 @@ func CreateQueueMiddleware(queueName string, connectionSettings ConnSettings) (M
 		return nil, err
 	}
 
-	err = recvChannel.Qos(
-		1,     // prefetch count
-		0,     // prefetch size
-		false, // global
-	)
 	if err != nil {
 		sendChannel.Close()
 		recvChannel.Close()
