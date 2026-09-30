@@ -15,8 +15,6 @@ import (
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/middleware"
 )
 
-const PREFETCH_LIMIT = 1
-
 type SumConfig struct {
 	Id                int
 	MomHost           string
@@ -44,16 +42,11 @@ type Sum struct {
 func NewSum(config SumConfig) (*Sum, error) {
 	connSettings := middleware.ConnSettings{Hostname: config.MomHost, Port: config.MomPort}
 
-	inputQueue, err := middleware.CreateQueueMiddleware(config.InputQueue, connSettings, PREFETCH_LIMIT)
+	inputQueue, err := middleware.CreateQueueMiddleware(config.InputQueue, connSettings)
 	if err != nil {
 		return nil, err
 	}
-
-	outputExchangeRouteKeys := make([]string, config.AggregationAmount)
-	for i := range config.AggregationAmount {
-		outputExchangeRouteKeys[i] = fmt.Sprintf("%s_%d", config.AggregationPrefix, i)
-	}
-	outputExchange, err := middleware.CreateExchangeMiddleware(config.AggregationPrefix, outputExchangeRouteKeys, connSettings)
+	outputExchange, err := middleware.CreateExchangeMiddleware(config.AggregationPrefix, []string{}, connSettings)
 	if err != nil {
 		inputQueue.Close()
 		return nil, err
