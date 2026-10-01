@@ -98,7 +98,7 @@ func initMiddlewaresForControl(config SumConfig, connSettings middleware.ConnSet
 		if i == config.Id {
 			continue
 		}
-		controlExchangeRouteKeys = append(controlExchangeRouteKeys, fmt.Sprintf("%s_%d", config.SumPrefix, i))
+		controlExchangeRouteKeys = append(controlExchangeRouteKeys, utils.GenerateRoutingKey(config.SumPrefix, i))
 	}
 	controlExchange, err := middleware.CreateExchangeMiddleware(config.SumPrefix, controlExchangeRouteKeys, connSettings)
 	if err != nil {
@@ -321,7 +321,7 @@ func (sum *Sum) sendAllEofs(clientId uint64) error {
 		return err
 	}
 	for i := 0; i < sum.aggregationAmount; i++ {
-		routingKey := fmt.Sprintf("%s_%d", sum.aggregationPrefix, i)
+		routingKey := utils.GenerateRoutingKey(sum.aggregationPrefix, i)
 		if err := sum.outputExchange.SendWithKey(*message, routingKey); err != nil {
 			slog.Debug("While sending EOF message", "err", err)
 			return err
