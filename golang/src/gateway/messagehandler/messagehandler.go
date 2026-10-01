@@ -1,7 +1,8 @@
 package messagehandler
 
 import (
-	"math/rand/v2"
+	"crypto/rand"
+	"encoding/binary"
 	"strconv"
 
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/fruititem"
@@ -43,5 +44,7 @@ func (messageHandler *MessageHandler) DeserializeResultMessage(message *middlewa
 }
 
 func generateClientId() uint64 {
-	return rand.Uint64()
+	var b [8]byte
+	rand.Read(b[:])
+	return binary.BigEndian.Uint64(b[:])
 }
