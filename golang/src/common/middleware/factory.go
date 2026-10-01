@@ -38,13 +38,6 @@ func CreateQueueMiddleware(queueName string, connectionSettings ConnSettings) (M
 		return nil, err
 	}
 
-	if err != nil {
-		sendChannel.Close()
-		recvChannel.Close()
-		conn.Close()
-		return nil, err
-	}
-
 	return NewQueueMiddleware(conn, sendChannel, recvChannel, queueName), nil
 }
 
