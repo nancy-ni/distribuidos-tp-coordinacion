@@ -115,6 +115,8 @@ func (join *Join) handleDataMessage(clientId uint64, localTop []fruititem.FruitI
 }
 
 func (join *Join) handleEndOfRecordsMessage(clientId uint64) error {
+	slog.Info("Received End Of Records message")
+
 	join.recvEofCountMap[clientId]++
 	receivedEofs := join.recvEofCountMap[clientId]
 	if receivedEofs < join.aggregationAmount {

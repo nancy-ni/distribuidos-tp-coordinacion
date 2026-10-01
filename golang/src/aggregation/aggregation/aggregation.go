@@ -100,6 +100,8 @@ func (aggregation *Aggregation) handleMessage(msg middleware.Message, ack func()
 }
 
 func (aggregation *Aggregation) handleEndOfRecordsMessage(clientId uint64) error {
+	slog.Info("Received End Of Records message")
+
 	aggregation.recvEofCountMap[clientId]++
 	receivedEofs := aggregation.recvEofCountMap[clientId]
 	if receivedEofs < aggregation.sumAmount {

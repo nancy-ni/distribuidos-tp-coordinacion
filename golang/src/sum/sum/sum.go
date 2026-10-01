@@ -172,13 +172,11 @@ func (sum *Sum) handleDataMessage(clientId uint64, fruitRecords []fruititem.Frui
 	clientStateManager.RegisterFruits(fruitRecords)
 
 	if clientStateManager.HasCoordinator() {
-		slog.Info(fmt.Sprintf("RECIBI DATA DESPUES DE EOF - CLIENT ID %d", clientId))
 		sum.flushClientData(clientId)
 
 		coordinatorRoutingKey := clientStateManager.GetCoordinator()
 		localProcessed := clientStateManager.GetLocalProcessedCount()
 		sum.sendReportToCoordinator(clientId, coordinatorRoutingKey, localProcessed)
-		slog.Info(fmt.Sprintf("ENVIE REPORT DESPUES DE EOF: %d - CLIENT ID %d", localProcessed, clientId))
 
 		clientStateManager.ResetClientState()
 	}
@@ -230,7 +228,7 @@ func (sum *Sum) handleControlMessage(msg middleware.Message, ack func(), nack fu
 }
 
 func (sum *Sum) handlePropagatedEof(clientId uint64, extraParam string) {
-	slog.Info(fmt.Sprintf("RECIBI EOF PROPAGADO - CLIENT ID %d", clientId))
+	slog.Info("Received Propagated End Of Records message")
 	defer sum.lock.Unlock()
 
 	coordinatorRoutingKey := extraParam
@@ -239,18 +237,14 @@ func (sum *Sum) handlePropagatedEof(clientId uint64, extraParam string) {
 	sum.lock.Lock()
 	clientStateManager.SetCoordinator(coordinatorRoutingKey, false)
 	sum.flushClientData(clientId)
-
-	slog.Info(fmt.Sprintf("ENVIE MI DATA ACTUAL A AGGREGATORS - CLIENT ID %d", clientId))
-
 	localProcessed := clientStateManager.GetLocalProcessedCount()
 	sum.sendReportToCoordinator(clientId, coordinatorRoutingKey, localProcessed)
-	slog.Info(fmt.Sprintf("ENVIE REPORT A COORDINADOR - CLIENT ID %d", clientId))
 
 	clientStateManager.ResetClientState()
 }
 
 func (sum *Sum) handleReport(clientId uint64, extraParam string) {
-	slog.Info(fmt.Sprintf("RECIBI REPORTE DE OTRO NODO SUM - CLIENT ID %d", clientId))
+	slog.Info("Received Processed Messages Report message")
 	defer sum.lock.Unlock()
 	processedCount, _ := strconv.Atoi(extraParam)
 
@@ -259,15 +253,13 @@ func (sum *Sum) handleReport(clientId uint64, extraParam string) {
 	clientStateManager.UpdateTotalProcessedMessages(processedCount)
 
 	if clientStateManager.AllMessagesProcessed() {
-		slog.Info(fmt.Sprintf("TODO CUADRA, ENVIANDO ACKS - CLIENT ID %d", clientId))
-		slog.Info("Entra a este sendAcks......")
 		sum.sendAckToFollowers(clientId)
 		sum.sendAllEofs(clientId)
 	}
 }
 
 func (sum *Sum) handleAck(clientId uint64) {
-	slog.Info(fmt.Sprintf("RECIBI ACK - CLIENT ID %d", clientId))
+	slog.Info("Received Ack message")
 	defer sum.lock.Unlock()
 	sum.lock.Lock()
 	sum.sendAllEofs(clientId)
@@ -296,16 +288,15 @@ func (sum *Sum) flushClientData(clientId uint64) error {
 }
 
 func (sum *Sum) sendReportToCoordinator(clientId uint64, coordinatorRoutingKey string, localProcessed int) {
-	slog.Info(fmt.Sprintf("REPORTANDO %d NUEVOS MENSAJES", localProcessed))
 	localProcessedStr := strconv.Itoa(localProcessed)
 	reportMessage, err := inner.SerializeMessage(clientId, []fruititem.FruitItem{}, inner.Report, localProcessedStr)
 	if err != nil {
-		slog.Info(fmt.Sprintf("error REPORT DESPUES DE EOF - CLIENT ID %d", clientId))
+		slog.Debug("While serializing Report message", "err", err)
 		return
 	}
 	err = sum.controlExchange.SendWithKey(*reportMessage, coordinatorRoutingKey)
 	if err != nil {
-		slog.Info(fmt.Sprintf("error2 REPORT DESPUES DE EOF - CLIENT ID %d", clientId))
+		slog.Debug("While sending Report message", "err", err)
 		return
 	}
 }
@@ -313,9 +304,13 @@ func (sum *Sum) sendReportToCoordinator(clientId uint64, coordinatorRoutingKey s
 func (sum *Sum) sendAckToFollowers(clientId uint64) {
 	ackMessage, err := inner.SerializeMessage(clientId, []fruititem.FruitItem{}, inner.Ack)
 	if err != nil {
+		slog.Debug("While serializing Ack message", "err", err)
 		return
 	}
-	_ = sum.controlExchange.Send(*ackMessage)
+	if err := sum.controlExchange.Send(*ackMessage); err != nil {
+		slog.Debug("While sending Ack message", "err", err)
+		return
+	}
 }
 
 func (sum *Sum) sendAllEofs(clientId uint64) error {
@@ -327,12 +322,13 @@ func (sum *Sum) sendAllEofs(clientId uint64) error {
 	}
 	for i := 0; i < sum.aggregationAmount; i++ {
 		routingKey := fmt.Sprintf("%s_%d", sum.aggregationPrefix, i)
-		_ = sum.outputExchange.SendWithKey(*message, routingKey)
+		if err := sum.outputExchange.SendWithKey(*message, routingKey); err != nil {
+			slog.Debug("While sending EOF message", "err", err)
+			return err
+		}
 	}
 
 	delete(sum.clientStates, clientId)
-	slog.Info(fmt.Sprintf("ENVIE MIS EOFS - CLIENT ID %d", clientId))
-
 	return nil
 }
 
