@@ -13,7 +13,10 @@ import (
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/fruititem"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/messageprotocol/inner"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/middleware"
+	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/utils"
 )
+
+const FIXED_SEED = "42"
 
 type SumConfig struct {
 	Id                int
@@ -28,18 +31,12 @@ type SumConfig struct {
 }
 
 type Sum struct {
-	myRoutingKey          string
-	inputQueue            middleware.Middleware
-	outputExchange        middleware.Middleware
-	controlQueue          middleware.Middleware
-	controlExchange       middleware.Middleware
-	fruitItemPerClientMap map[uint64]map[string]fruititem.FruitItem
-
-	clientTotalExpected     map[uint64]int
-	clientProcessedCount    map[uint64]int
-	clientCoordinators      map[uint64]string
-	totalProcessedPerClient map[uint64]int
-
+	myRoutingKey      string
+	inputQueue        middleware.Middleware
+	outputExchange    middleware.Middleware
+	controlQueue      middleware.Middleware
+	controlExchange   middleware.Middleware
+	clientStates      map[uint64]*ClientStateManager
 	lock              sync.Mutex
 	aggregationAmount int
 	aggregationPrefix string
@@ -49,21 +46,53 @@ type Sum struct {
 func NewSum(config SumConfig) (*Sum, error) {
 	connSettings := middleware.ConnSettings{Hostname: config.MomHost, Port: config.MomPort}
 
-	inputQueue, err := middleware.CreateQueueMiddleware(config.InputQueue, connSettings)
+	inputQueue, outputExchange, err := initMiddlewaresForData(config, connSettings)
 	if err != nil {
 		return nil, err
+	}
+
+	controlQueue, controlExchange, err := initMiddlewaresForControl(config, connSettings)
+	if err != nil {
+		inputQueue.Close()
+		outputExchange.Close()
+		return nil, err
+	}
+
+	myRoutingKey := utils.GenerateRoutingKey(config.SumPrefix, config.Id)
+	return &Sum{
+		myRoutingKey:    myRoutingKey,
+		inputQueue:      inputQueue,
+		outputExchange:  outputExchange,
+		controlQueue:    controlQueue,
+		controlExchange: controlExchange,
+
+		clientStates: map[uint64]*ClientStateManager{},
+
+		lock:              sync.Mutex{},
+		aggregationAmount: config.AggregationAmount,
+		aggregationPrefix: config.AggregationPrefix,
+		sumAmount:         config.SumAmount,
+	}, nil
+}
+
+func initMiddlewaresForData(config SumConfig, connSettings middleware.ConnSettings) (middleware.Middleware, middleware.Middleware, error) {
+	inputQueue, err := middleware.CreateQueueMiddleware(config.InputQueue, connSettings)
+	if err != nil {
+		return nil, nil, err
 	}
 	outputExchange, err := middleware.CreateExchangeMiddleware(config.AggregationPrefix, []string{}, connSettings)
 	if err != nil {
 		inputQueue.Close()
-		return nil, err
+		return nil, nil, err
 	}
+	return inputQueue, outputExchange, nil
+}
 
+func initMiddlewaresForControl(config SumConfig, connSettings middleware.ConnSettings) (middleware.Middleware, middleware.Middleware, error) {
 	controlQueue, err := middleware.CreateQueueMiddleware(config.ControlQueue, connSettings)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-
 	controlExchangeRouteKeys := make([]string, 0, config.SumAmount-1)
 	for i := range config.SumAmount {
 		if i == config.Id {
@@ -73,39 +102,16 @@ func NewSum(config SumConfig) (*Sum, error) {
 	}
 	controlExchange, err := middleware.CreateExchangeMiddleware(config.SumPrefix, controlExchangeRouteKeys, connSettings)
 	if err != nil {
-		inputQueue.Close()
-		outputExchange.Close()
 		controlQueue.Close()
-		return nil, err
+		return nil, nil, err
 	}
-
-	myRoutingKey := fmt.Sprintf("%s_%d", config.SumPrefix, config.Id)
+	myRoutingKey := utils.GenerateRoutingKey(config.SumPrefix, config.Id)
 	if err := controlQueue.Bind(config.SumPrefix, myRoutingKey); err != nil {
-		inputQueue.Close()
-		outputExchange.Close()
 		controlQueue.Close()
 		controlExchange.Close()
-		return nil, err
+		return nil, nil, err
 	}
-
-	return &Sum{
-		myRoutingKey:          myRoutingKey,
-		inputQueue:            inputQueue,
-		outputExchange:        outputExchange,
-		controlQueue:          controlQueue,
-		controlExchange:       controlExchange,
-		fruitItemPerClientMap: map[uint64]map[string]fruititem.FruitItem{},
-
-		clientTotalExpected:     map[uint64]int{},
-		clientProcessedCount:    map[uint64]int{},
-		clientCoordinators:      map[uint64]string{},
-		totalProcessedPerClient: map[uint64]int{},
-
-		lock:              sync.Mutex{},
-		aggregationAmount: config.AggregationAmount,
-		aggregationPrefix: config.AggregationPrefix,
-		sumAmount:         config.SumAmount,
-	}, nil
+	return controlQueue, controlExchange, nil
 }
 
 func (sum *Sum) Run() {
@@ -123,6 +129,10 @@ func (sum *Sum) Run() {
 		})
 	}()
 
+	sum.handleShutdown(signalChannel)
+}
+
+func (sum *Sum) handleShutdown(signalChannel chan os.Signal) {
 	sig := <-signalChannel
 	slog.Info(fmt.Sprintf("Received %v signal for Sum", sig))
 
@@ -155,79 +165,48 @@ func (sum *Sum) handleMessage(msg middleware.Message, ack func(), nack func()) {
 }
 
 func (sum *Sum) handleDataMessage(clientId uint64, fruitRecords []fruititem.FruitItem) error {
+	defer sum.lock.Unlock()
 	sum.lock.Lock()
-	if _, ok := sum.fruitItemPerClientMap[clientId]; !ok {
-		sum.fruitItemPerClientMap[clientId] = map[string]fruititem.FruitItem{}
-	}
 
-	clientFruits := sum.fruitItemPerClientMap[clientId]
-	for _, fruitRecord := range fruitRecords {
-		_, ok := clientFruits[fruitRecord.Fruit]
-		if ok {
-			clientFruits[fruitRecord.Fruit] = clientFruits[fruitRecord.Fruit].Sum(fruitRecord)
-		} else {
-			clientFruits[fruitRecord.Fruit] = fruitRecord
-		}
-	}
+	clientStateManager := sum.getClientStateManager(clientId)
+	clientStateManager.RegisterFruits(fruitRecords)
 
-	if _, ok := sum.totalProcessedPerClient[clientId]; !ok {
-		sum.totalProcessedPerClient[clientId] = 0
-	}
-	sum.totalProcessedPerClient[clientId]++
-
-	coordinatorRoutingKey, hasCoordinator := sum.clientCoordinators[clientId]
-	if hasCoordinator {
+	if clientStateManager.HasCoordinator() {
 		slog.Info(fmt.Sprintf("RECIBI DATA DESPUES DE EOF - CLIENT ID %d", clientId))
 		sum.flushClientData(clientId)
 
-		localProcessed := 0
-		if processed, ok := sum.totalProcessedPerClient[clientId]; ok {
-			localProcessed = processed
-		}
+		coordinatorRoutingKey := clientStateManager.GetCoordinator()
+		localProcessed := clientStateManager.GetLocalProcessedCount()
 		sum.sendReportToCoordinator(clientId, coordinatorRoutingKey, localProcessed)
-		slog.Info(fmt.Sprintf("ENVIE REPORT DESPUES DE EOF - CLIENT ID %d", clientId))
-	}
+		slog.Info(fmt.Sprintf("ENVIE REPORT DESPUES DE EOF: %d - CLIENT ID %d", localProcessed, clientId))
 
-	sum.lock.Unlock()
+		clientStateManager.ResetClientState()
+	}
 	return nil
 }
 
 func (sum *Sum) handleOriginalEofMessage(msg middleware.Message, clientId uint64) error {
-	slog.Info(fmt.Sprintf("RECIBI EOF ORIGINAL - CLIENT ID %d", clientId))
+	slog.Info("Received End Of Records message")
+	defer sum.lock.Unlock()
 
 	_, _, _, extraParam, _ := inner.DeserializeMessage(&msg)
 	clientTotalSent, _ := strconv.Atoi(extraParam)
 
 	sum.lock.Lock()
-	sum.clientTotalExpected[clientId] = clientTotalSent
-	sum.clientCoordinators[clientId] = sum.myRoutingKey
-
+	clientStateManager := sum.getClientStateManager(clientId)
+	clientStateManager.SetCoordinator(sum.myRoutingKey, true, clientTotalSent)
 	if err := sum.flushClientData(clientId); err != nil {
-		sum.lock.Unlock()
 		return err
 	}
-
-	localProcessed := 0
-	if processed, ok := sum.totalProcessedPerClient[clientId]; ok {
-		localProcessed = processed
-	}
-	sum.clientProcessedCount[clientId] += localProcessed
-	currentTotal := sum.clientProcessedCount[clientId]
-	targetTotal := sum.clientTotalExpected[clientId]
-
 	propagatedEofMsg, err := inner.SerializeMessage(clientId, []fruititem.FruitItem{}, inner.Eof, sum.myRoutingKey)
 	if err == nil {
 		sum.controlExchange.Send(*propagatedEofMsg)
 	}
 
-	if currentTotal >= targetTotal {
-		slog.Info("Raro que entre aca......")
+	if clientStateManager.AllMessagesProcessed() {
 		sum.sendAckToFollowers(clientId)
 		sum.sendAllEofs(clientId)
 	}
-
-	sum.lock.Unlock()
-
 	return nil
 }
 
@@ -242,89 +221,77 @@ func (sum *Sum) handleControlMessage(msg middleware.Message, ack func(), nack fu
 
 	switch messageType {
 	case inner.Eof:
-		slog.Info(fmt.Sprintf("RECIBI EOF PROPAGADO - CLIENT ID %d", clientId))
-		coordinatorRoutingKey := extraParam
-
-		sum.lock.Lock()
-		sum.clientCoordinators[clientId] = coordinatorRoutingKey
-		sum.flushClientData(clientId)
-
-		slog.Info(fmt.Sprintf("ENVIE MI DATA ACTUAL A AGGREGATORS - CLIENT ID %d", clientId))
-
-		localProcessed := 0
-		if processed, ok := sum.totalProcessedPerClient[clientId]; ok {
-			localProcessed = processed
-		}
-		sum.sendReportToCoordinator(clientId, coordinatorRoutingKey, localProcessed)
-		slog.Info(fmt.Sprintf("ENVIE REPORT A COORDINADOR - CLIENT ID %d", clientId))
-		sum.lock.Unlock()
-
+		sum.handlePropagatedEof(clientId, extraParam)
 	case inner.Report:
-		slog.Info(fmt.Sprintf("RECIBI REPORTE DE OTRO NODO SUM - CLIENT ID %d", clientId))
-		processedCount, _ := strconv.Atoi(extraParam)
-
-		sum.lock.Lock()
-		sum.clientProcessedCount[clientId] += processedCount
-		currentTotal := sum.clientProcessedCount[clientId]
-		targetTotal := sum.clientTotalExpected[clientId]
-
-		if currentTotal >= targetTotal {
-			slog.Info(fmt.Sprintf("TODO CUADRA, ENVIANDO ACKS - CLIENT ID %d", clientId))
-			slog.Info("Entra a este sendAcks......")
-			sum.sendAckToFollowers(clientId)
-			sum.sendAllEofs(clientId)
-		}
-		sum.lock.Unlock()
+		sum.handleReport(clientId, extraParam)
 	case inner.Ack:
-		sum.lock.Lock()
-		slog.Info(fmt.Sprintf("RECIBI ACK - CLIENT ID %d", clientId))
-		sum.sendAllEofs(clientId)
-		sum.lock.Unlock()
+		sum.handleAck(clientId)
 	}
 }
 
+func (sum *Sum) handlePropagatedEof(clientId uint64, extraParam string) {
+	slog.Info(fmt.Sprintf("RECIBI EOF PROPAGADO - CLIENT ID %d", clientId))
+	defer sum.lock.Unlock()
+
+	coordinatorRoutingKey := extraParam
+	clientStateManager := sum.getClientStateManager(clientId)
+
+	sum.lock.Lock()
+	clientStateManager.SetCoordinator(coordinatorRoutingKey, false)
+	sum.flushClientData(clientId)
+
+	slog.Info(fmt.Sprintf("ENVIE MI DATA ACTUAL A AGGREGATORS - CLIENT ID %d", clientId))
+
+	localProcessed := clientStateManager.GetLocalProcessedCount()
+	sum.sendReportToCoordinator(clientId, coordinatorRoutingKey, localProcessed)
+	slog.Info(fmt.Sprintf("ENVIE REPORT A COORDINADOR - CLIENT ID %d", clientId))
+
+	clientStateManager.ResetClientState()
+}
+
+func (sum *Sum) handleReport(clientId uint64, extraParam string) {
+	slog.Info(fmt.Sprintf("RECIBI REPORTE DE OTRO NODO SUM - CLIENT ID %d", clientId))
+	defer sum.lock.Unlock()
+	processedCount, _ := strconv.Atoi(extraParam)
+
+	sum.lock.Lock()
+	clientStateManager := sum.getClientStateManager(clientId)
+	clientStateManager.UpdateTotalProcessedMessages(processedCount)
+
+	if clientStateManager.AllMessagesProcessed() {
+		slog.Info(fmt.Sprintf("TODO CUADRA, ENVIANDO ACKS - CLIENT ID %d", clientId))
+		slog.Info("Entra a este sendAcks......")
+		sum.sendAckToFollowers(clientId)
+		sum.sendAllEofs(clientId)
+	}
+}
+
+func (sum *Sum) handleAck(clientId uint64) {
+	slog.Info(fmt.Sprintf("RECIBI ACK - CLIENT ID %d", clientId))
+	defer sum.lock.Unlock()
+	sum.lock.Lock()
+	sum.sendAllEofs(clientId)
+}
+
 func (sum *Sum) flushClientData(clientId uint64) error {
-	outputExchange := sum.outputExchange.(*middleware.ExchangeMiddleware)
-	clientFruits, ok := sum.fruitItemPerClientMap[clientId]
-	if ok {
+	if clientStateManager, ok := sum.clientStates[clientId]; ok {
+		clientFruits := clientStateManager.GetFruitItems()
 		for fruit, item := range clientFruits {
 			targetNode := sum.getTargetAggregationNode(clientId, fruit)
-			routingKey := fmt.Sprintf("%s_%d", sum.aggregationPrefix, targetNode)
+			routingKey := utils.GenerateRoutingKey(sum.aggregationPrefix, targetNode)
 
 			fruitRecord := []fruititem.FruitItem{item}
-			message, err := inner.SerializeMessage(clientId, fruitRecord, "DATA")
+			message, err := inner.SerializeMessage(clientId, fruitRecord, inner.Data)
 			if err != nil {
 				slog.Debug("While serializing message", "err", err)
 				return err
 			}
-			if err := outputExchange.SendWithKey(*message, routingKey); err != nil {
+			if err := sum.outputExchange.SendWithKey(*message, routingKey); err != nil {
 				slog.Debug("While sending message", "err", err)
 				return err
 			}
 		}
-		delete(sum.fruitItemPerClientMap, clientId)
 	}
-	return nil
-}
-
-func (sum *Sum) sendAllEofs(clientId uint64) error {
-	outputExchange := sum.outputExchange.(*middleware.ExchangeMiddleware)
-	eofMessage := []fruititem.FruitItem{}
-	message, err := inner.SerializeMessage(clientId, eofMessage, inner.Eof)
-	if err != nil {
-		slog.Debug("While serializing EOF message", "err", err)
-		return err
-	}
-	for i := 0; i < sum.aggregationAmount; i++ {
-		routingKey := fmt.Sprintf("%s_%d", sum.aggregationPrefix, i)
-		_ = outputExchange.SendWithKey(*message, routingKey)
-	}
-
-	delete(sum.clientTotalExpected, clientId)
-	delete(sum.clientProcessedCount, clientId)
-	delete(sum.clientCoordinators, clientId)
-	slog.Info(fmt.Sprintf("ENVIE MIS EOFS - CLIENT ID %d", clientId))
-
 	return nil
 }
 
@@ -336,13 +303,11 @@ func (sum *Sum) sendReportToCoordinator(clientId uint64, coordinatorRoutingKey s
 		slog.Info(fmt.Sprintf("error REPORT DESPUES DE EOF - CLIENT ID %d", clientId))
 		return
 	}
-	exchange := sum.controlExchange.(*middleware.ExchangeMiddleware)
-	err = exchange.SendWithKey(*reportMessage, coordinatorRoutingKey)
+	err = sum.controlExchange.SendWithKey(*reportMessage, coordinatorRoutingKey)
 	if err != nil {
 		slog.Info(fmt.Sprintf("error2 REPORT DESPUES DE EOF - CLIENT ID %d", clientId))
 		return
 	}
-	delete(sum.totalProcessedPerClient, clientId)
 }
 
 func (sum *Sum) sendAckToFollowers(clientId uint64) {
@@ -353,11 +318,36 @@ func (sum *Sum) sendAckToFollowers(clientId uint64) {
 	_ = sum.controlExchange.Send(*ackMessage)
 }
 
+func (sum *Sum) sendAllEofs(clientId uint64) error {
+	eofMessage := []fruititem.FruitItem{}
+	message, err := inner.SerializeMessage(clientId, eofMessage, inner.Eof)
+	if err != nil {
+		slog.Debug("While serializing EOF message", "err", err)
+		return err
+	}
+	for i := 0; i < sum.aggregationAmount; i++ {
+		routingKey := fmt.Sprintf("%s_%d", sum.aggregationPrefix, i)
+		_ = sum.outputExchange.SendWithKey(*message, routingKey)
+	}
+
+	delete(sum.clientStates, clientId)
+	slog.Info(fmt.Sprintf("ENVIE MIS EOFS - CLIENT ID %d", clientId))
+
+	return nil
+}
+
 func (sum *Sum) getTargetAggregationNode(clientId uint64, fruitName string) int {
 	h := fnv.New64a()
-	h.Write([]byte("42"))
+	h.Write([]byte(FIXED_SEED))
 	fmt.Fprintf(h, "-%d-%s", clientId, fruitName)
 
 	hashValue := h.Sum64()
 	return int(hashValue % uint64(sum.aggregationAmount))
+}
+
+func (sum *Sum) getClientStateManager(clientId uint64) *ClientStateManager {
+	if _, ok := sum.clientStates[clientId]; !ok {
+		sum.clientStates[clientId] = NewClientStateManager(clientId)
+	}
+	return sum.clientStates[clientId]
 }

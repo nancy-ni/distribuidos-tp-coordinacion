@@ -47,4 +47,9 @@ type Middleware interface {
 	//Si se pierde la conexión con el middleware devuelve ErrMessageMiddlewareDisconnected.
 	//Si ocurre un error interno que no puede resolverse devuelve ErrMessageMiddlewareMessage.
 	Bind(exchangeName string, routingKey string) error
+
+	//Envía un mensaje a la cola o al tópico especificado.
+	//Si se pierde la conexión con el middleware devuelve ErrMessageMiddlewareDisconnected.
+	//Si ocurre un error interno que no puede resolverse devuelve ErrMessageMiddlewareMessage.
+	SendWithKey(msg Message, routingKey string) error
 }

@@ -5,12 +5,12 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"sort"
 	"syscall"
 
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/fruititem"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/messageprotocol/inner"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/middleware"
+	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/utils"
 )
 
 type JoinConfig struct {
@@ -68,6 +68,10 @@ func (join *Join) Run() {
 		})
 	}()
 
+	join.handleShutdown(signalChannel)
+}
+
+func (join *Join) handleShutdown(signalChannel chan os.Signal) {
 	sig := <-signalChannel
 	slog.Info(fmt.Sprintf("Received %v signal for Join", sig))
 
@@ -85,7 +89,7 @@ func (join *Join) handleMessage(msg middleware.Message, ack func(), nack func())
 		return
 	}
 
-	if messageType == "EOF" {
+	if messageType == inner.Eof {
 		if err := join.handleEndOfRecordsMessage(clientId); err != nil {
 			slog.Error("While handling end of record message", "err", err)
 		}
@@ -117,15 +121,8 @@ func (join *Join) handleEndOfRecordsMessage(clientId uint64) error {
 		return nil
 	}
 
-	fruitTopRecords := []fruititem.FruitItem{}
-	clientFruits, ok := join.fruitItemPerClientMap[clientId]
-	if ok {
-		fruitTopRecords = join.buildGlobalTop(clientFruits)
-		delete(join.fruitItemPerClientMap, clientId)
-	}
-	delete(join.recvEofCountMap, clientId)
-
-	message, err := inner.SerializeMessage(clientId, fruitTopRecords, "DATA")
+	fruitTopRecords := join.fetchFruitTopRecords(clientId)
+	message, err := inner.SerializeMessage(clientId, fruitTopRecords, inner.Data)
 	if err != nil {
 		slog.Debug("While serializing top message", "err", err)
 		return err
@@ -137,14 +134,13 @@ func (join *Join) handleEndOfRecordsMessage(clientId uint64) error {
 	return nil
 }
 
-func (join *Join) buildGlobalTop(clientFruits map[string]fruititem.FruitItem) []fruititem.FruitItem {
-	fruitItems := make([]fruititem.FruitItem, 0, len(clientFruits))
-	for _, item := range clientFruits {
-		fruitItems = append(fruitItems, item)
+func (join *Join) fetchFruitTopRecords(clientId uint64) []fruititem.FruitItem {
+	fruitTopRecords := []fruititem.FruitItem{}
+	clientFruits, ok := join.fruitItemPerClientMap[clientId]
+	if ok {
+		fruitTopRecords = utils.BuildFruitTop(join.topSize, clientFruits)
+		delete(join.fruitItemPerClientMap, clientId)
 	}
-	sort.SliceStable(fruitItems, func(i, j int) bool {
-		return fruitItems[j].Less(fruitItems[i])
-	})
-	finalTopSize := min(join.topSize, len(fruitItems))
-	return fruitItems[:finalTopSize]
+	delete(join.recvEofCountMap, clientId)
+	return fruitTopRecords
 }

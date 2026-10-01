@@ -96,3 +96,10 @@ func (qm *QueueMiddleware) Bind(exchangeName string, routingKey string) error {
 	}
 	return nil
 }
+
+func (qm *QueueMiddleware) SendWithKey(msg Message, routingKey string) error {
+	if err := qm.Send(msg); err != nil {
+		return err
+	}
+	return nil
+}
